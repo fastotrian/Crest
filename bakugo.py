@@ -479,7 +479,7 @@ def send_email(
             "Content-Type": "application/json",
         },
         json={
-            "from": SENDER_EMAIL,
+            "from": f"CREST Community <{SENDER_EMAIL}>",
             "to": [receiver],
             "subject": subject,
             "text": message,
