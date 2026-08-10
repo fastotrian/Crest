@@ -31,7 +31,7 @@ export const Route = createFileRoute("/dashboard")({
   component: DashboardOverview,
 });
 
-const API_URL = "https://crest-vif2.onrender.com";
+const API_URL = "https://crest-jvfj.onrender.com";
 
 // =========================================================
 // TOKEN HELPER

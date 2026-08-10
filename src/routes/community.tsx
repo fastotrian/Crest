@@ -21,7 +21,7 @@ export const Route = createFileRoute("/community")({
 // AUTH HELPERS
 // =========================================================
 
-const API_URL = "https://crest-ygqu.onrender.com";
+const API_URL = "https://crest-jvfj.onrender.com";
 
 // =========================================================
 // AUTH VERIFICATION CACHE (avoids re-checking on every nav)
