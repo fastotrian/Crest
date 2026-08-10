@@ -13,16 +13,15 @@ from typing import List, Optional, Dict, Any
 from uuid import uuid4
 
 from jose import jwt, JWTError
-from passlib.context import CryptContext
+import bcrypt
 
 import random
 import string
-import smtplib
+import requests
 import os
 import re
 
 from dotenv import load_dotenv
-from email.message import EmailMessage
 
 
 # =========================================================
@@ -40,7 +39,7 @@ load_dotenv(ENV_FILE)
 # =========================================================
 
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "").strip()
-APP_PASSWORD = os.getenv("APP_PASSWORD", "").strip()
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip()
 
 
 # =========================================================
@@ -129,9 +128,6 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60
 # =========================================================
 # PASSWORD HASHING
 # =========================================================
-
-import bcrypt
-
 
 def hash_password(password: str) -> str:
 
@@ -467,34 +463,41 @@ def send_email(
             "SENDER_EMAIL is missing from .env"
         )
 
-    if not APP_PASSWORD:
+    if not RESEND_API_KEY:
         raise RuntimeError(
-            "APP_PASSWORD is missing from .env"
+            "RESEND_API_KEY is missing from .env"
         )
-
-    msg = EmailMessage()
-
-    msg["From"] = SENDER_EMAIL
-    msg["To"] = receiver
-    msg["Subject"] = subject
-
-    msg.set_content(message)
 
     print(
         f"Sending email to {receiver}..."
     )
 
-    with smtplib.SMTP_SSL(
-        "smtp.gmail.com",
-        465
-    ) as server:
+    response = requests.post(
+        "https://api.resend.com/emails",
+        headers={
+            "Authorization": f"Bearer {RESEND_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "from": SENDER_EMAIL,
+            "to": [receiver],
+            "subject": subject,
+            "text": message,
+        },
+        timeout=15,
+    )
 
-        server.login(
-            SENDER_EMAIL,
-            APP_PASSWORD
+    if response.status_code >= 400:
+
+        print(
+            "Resend API error:",
+            response.status_code,
+            response.text
         )
 
-        server.send_message(msg)
+        raise RuntimeError(
+            f"Failed to send email: {response.text}"
+        )
 
     print("Email sent successfully!")
 
