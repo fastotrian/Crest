@@ -130,10 +130,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60
 # PASSWORD HASHING
 # =========================================================
 
-pwd_context = CryptContext(
-    schemes=["bcrypt"],
-    deprecated="auto"
-)
+import bcrypt
 
 
 def hash_password(password: str) -> str:
@@ -150,12 +147,19 @@ def hash_password(password: str) -> str:
     # For admin passwords, reject passwords longer than 72 bytes
     # instead of silently truncating them.
 
-    if len(password.encode("utf-8")) > 72:
+    password_bytes = password.encode("utf-8")
+
+    if len(password_bytes) > 72:
         raise ValueError(
             "Password must be 72 bytes or fewer when using bcrypt."
         )
 
-    return pwd_context.hash(password)
+    hashed = bcrypt.hashpw(
+        password_bytes,
+        bcrypt.gensalt()
+    )
+
+    return hashed.decode("utf-8")
 
 
 def verify_password(
@@ -171,12 +175,14 @@ def verify_password(
 
     try:
 
-        if len(plain_password.encode("utf-8")) > 72:
+        plain_bytes = plain_password.encode("utf-8")
+
+        if len(plain_bytes) > 72:
             return False
 
-        return pwd_context.verify(
-            plain_password,
-            hashed_password
+        return bcrypt.checkpw(
+            plain_bytes,
+            hashed_password.encode("utf-8")
         )
 
     except Exception as error:
