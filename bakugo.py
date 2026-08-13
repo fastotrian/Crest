@@ -13,14 +13,12 @@ from typing import List, Optional, Dict, Any
 from uuid import uuid4
 
 from jose import jwt, JWTError
-from passlib.context import CryptContext
-
+import bcrypt
 import random
 import string
 import os
 import re
-import requests          # <-- added
-
+import requests
 from dotenv import load_dotenv
 
 
@@ -30,7 +28,6 @@ from dotenv import load_dotenv
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ENV_FILE = os.path.join(BASE_DIR, ".env")
-
 load_dotenv(ENV_FILE)
 
 
@@ -50,7 +47,6 @@ password = os.getenv("MONGO_PASSWORD", "").strip()
 
 if not username:
     raise RuntimeError("MONGO_USERNAME is missing from .env")
-
 if not password:
     raise RuntimeError("MONGO_PASSWORD is missing from .env")
 
@@ -59,8 +55,7 @@ encoded_password = quote_plus(password)
 
 uri = (
     f"mongodb+srv://{encoded_username}:{encoded_password}"
-    "@cluster0.jcwhpzw.mongodb.net/"
-    "?appName=Cluster0"
+    "@cluster0.jcwhpzw.mongodb.net/?appName=Cluster0"
 )
 
 
@@ -69,7 +64,6 @@ uri = (
 # =========================================================
 
 client = MongoClient(uri)
-
 db = client["base"]
 
 new_applications = db["newts"]
@@ -80,7 +74,6 @@ admins = db["admins"]
 notifica = db["notifications"]
 polls = db["polls"]
 
-# Growth module collections
 growth_events = db["growth_events"]
 growth_learning = db["growth_learning"]
 growth_assignments = db["growth_assignments"]
@@ -92,10 +85,7 @@ growth_achievements = db["growth_achievements"]
 # FASTAPI
 # =========================================================
 
-app = FastAPI(
-    title="CREST API",
-    version="1.0.0"
-)
+app = FastAPI(title="CREST API", version="1.0.0")
 
 
 # =========================================================
@@ -103,7 +93,6 @@ app = FastAPI(
 # =========================================================
 
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "").strip()
-
 if not SECRET_KEY:
     raise RuntimeError("JWT_SECRET_KEY is missing from .env")
 
@@ -112,36 +101,30 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
 
 # =========================================================
-# PASSWORD HASHING
+# PASSWORD HASHING (Pure bcrypt - Fixed)
 # =========================================================
-
-pwd_context = CryptContext(
-    schemes=["bcrypt"],
-    deprecated="auto"
-)
-
 
 def hash_password(password: str) -> str:
     if not password:
         raise ValueError("Password cannot be empty")
 
-    if len(password.encode("utf-8")) > 72:
-        raise ValueError("Password must be 72 bytes or fewer when using bcrypt.")
+    password_bytes = password.encode("utf-8")
+    if len(password_bytes) > 72:
+        raise ValueError("Password must be 72 bytes or fewer")
 
-    return pwd_context.hash(password)
+    hashed = bcrypt.hashpw(password_bytes, bcrypt.gensalt())
+    return hashed.decode("utf-8")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     if not plain_password or not hashed_password:
         return False
 
-    if plain_password == hashed_password:
-        return True
-
     try:
-        if len(plain_password.encode("utf-8")) > 72:
-            return False
-        return pwd_context.verify(plain_password, hashed_password)
+        return bcrypt.checkpw(
+            plain_password.encode("utf-8"),
+            hashed_password.encode("utf-8")
+        )
     except Exception as error:
         print("Password verification error:", error)
         return False
@@ -154,47 +137,24 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 security = HTTPBearer()
 
 
-# =========================================================
-# CREATE JWT
-# =========================================================
-
 def create_access_token(email: str, role: str) -> str:
-    expire = (
-        datetime.now(timezone.utc)
-        + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    )
-    payload = {
-        "sub": email,
-        "role": role,
-        "exp": expire
-    }
+    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    payload = {"sub": email, "role": role, "exp": expire}
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
 
-# =========================================================
-# READ JWT
-# =========================================================
-
-def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security)
-):
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         email = payload.get("sub")
         role = payload.get("role")
-
         if not email or not role:
             raise HTTPException(status_code=401, detail="Invalid authentication token")
-
         return {"email": email, "role": role}
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
-
-# =========================================================
-# REQUIRE ADMIN / MEMBER
-# =========================================================
 
 def require_admin(current_user=Depends(get_current_user)):
     if current_user["role"] != "admin":
@@ -213,12 +173,10 @@ def require_member(current_user=Depends(get_current_user)):
 # =========================================================
 
 FRONTEND_URL = os.getenv("FRONTEND_URL", "").strip()
-
 allowed_origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]
-
 if FRONTEND_URL:
     allowed_origins.append(FRONTEND_URL)
 
@@ -232,7 +190,7 @@ app.add_middleware(
 
 
 # =========================================================
-# MODELS  (unchanged)
+# MODELS
 # =========================================================
 
 class Application(BaseModel):
@@ -272,7 +230,6 @@ class PollVote(BaseModel):
     option: str
 
 
-# Growth models stay exactly the same...
 class GrowthEventCreate(BaseModel):
     kind: str = "workshop"
     category: str = "workshop"
@@ -342,19 +299,18 @@ class GrowthAchievementCreate(BaseModel):
 
 
 # =========================================================
-# SMS  (Textbee)
+# SMS (Textbee)
 # =========================================================
 
 def normalize_phone(phone: str) -> str:
-    """Make sure phone is in E.164 format (best effort for Indian numbers)."""
     phone = re.sub(r"[^\d+]", "", phone.strip())
     if phone.startswith("+"):
         return phone
     if phone.startswith("91") and len(phone) == 12:
         return "+" + phone
-    if len(phone) == 10:          # common Indian mobile
+    if len(phone) == 10:
         return "+91" + phone
-    return phone                  # fallback – hope it's already correct
+    return phone
 
 
 def send_sms(receiver_phone: str, message: str):
@@ -362,15 +318,11 @@ def send_sms(receiver_phone: str, message: str):
         raise RuntimeError("TEXTBEE_API_KEY is missing from .env")
 
     phone = normalize_phone(receiver_phone)
-
     print(f"Sending SMS to {phone}...")
 
     response = requests.post(
         "https://api.textbee.dev/api/v1/gateway/send-sms",
-        json={
-            "recipients": [phone],
-            "message": message
-        },
+        json={"recipients": [phone], "message": message},
         headers={
             "x-api-key": TEXTBEE_API_KEY,
             "Content-Type": "application/json"
@@ -386,10 +338,6 @@ def send_sms(receiver_phone: str, message: str):
     return response.json()
 
 
-# =========================================================
-# APPLICATION RECEIVED SMS
-# =========================================================
-
 def send_initial_sms(receiver_phone: str, name: str):
     send_sms(
         receiver_phone,
@@ -398,7 +346,6 @@ def send_initial_sms(receiver_phone: str, name: str):
 Thank you for applying to join the CREST Community!
 
 We have successfully received your application.
-
 Our team will carefully review all submissions and notify you of the outcome.
 
 Best regards,
@@ -406,18 +353,10 @@ CREST Community"""
     )
 
 
-# =========================================================
-# GENERATE MEMBER PASSWORD
-# =========================================================
-
 def generate_password():
     characters = string.ascii_letters + string.digits
     return "".join(random.choice(characters) for _ in range(8))
 
-
-# =========================================================
-# SHORTLIST SMS
-# =========================================================
 
 def send_shortlisted_sms(receiver_phone: str, name: str, login_password: str, email: str):
     send_sms(
@@ -436,10 +375,6 @@ Welcome to CREST!
 CREST Community"""
     )
 
-
-# =========================================================
-# REJECTED SMS
-# =========================================================
 
 def send_rejected_sms(receiver_phone: str, name: str):
     send_sms(
@@ -467,7 +402,7 @@ async def root():
 
 
 # =========================================================
-# ADD APPLICATION
+# APPLICATIONS
 # =========================================================
 
 @app.post("/applications")
@@ -478,7 +413,6 @@ async def add_application(application: Application):
 
     result = new_applications.insert_one(data)
 
-    # Send SMS instead of email
     try:
         send_initial_sms(application.phone, application.name)
     except Exception as e:
@@ -490,10 +424,6 @@ async def add_application(application: Application):
         "id": str(result.inserted_id)
     }
 
-
-# =========================================================
-# LOAD COLLECTION  (unchanged)
-# =========================================================
 
 def load_collection(collection, status):
     applications = []
@@ -529,14 +459,10 @@ def get_id(application_id):
         raise HTTPException(status_code=400, detail="Invalid application ID")
 
 
-# =========================================================
-# MOVE APPLICATION  (SMS instead of email)
-# =========================================================
-
 def move_application(application_id, destination, status):
     object_id = get_id(application_id)
-
     application = new_applications.find_one({"_id": object_id})
+
     if not application:
         raise HTTPException(status_code=404, detail="Application not found")
 
@@ -547,7 +473,6 @@ def move_application(application_id, destination, status):
     del application["_id"]
     application["status"] = status
 
-    # ========== SHORTLIST ==========
     if status == "shortlisted":
         login_password = generate_password()
         password_hash = hash_password(login_password)
@@ -579,18 +504,13 @@ def move_application(application_id, destination, status):
         members.update_one({"email": email}, {"$set": member}, upsert=True)
         new_applications.delete_one({"_id": object_id})
 
-        # Send credentials via SMS
         try:
             send_shortlisted_sms(phone, name, login_password, email)
         except Exception as e:
             print("Failed to send shortlisted SMS:", e)
 
-        return {
-            "message": "Application shortlisted successfully",
-            "id": str(object_id)
-        }
+        return {"message": "Application shortlisted successfully", "id": str(object_id)}
 
-    # ========== REJECT ==========
     if status == "rejected":
         application["rejectedAt"] = datetime.now(timezone.utc)
         destination.insert_one(application)
@@ -601,28 +521,20 @@ def move_application(application_id, destination, status):
         except Exception as e:
             print("Failed to send rejected SMS:", e)
 
-        return {
-            "message": "Application rejected successfully",
-            "id": str(object_id)
-        }
+        return {"message": "Application rejected successfully", "id": str(object_id)}
 
     raise HTTPException(status_code=400, detail="Invalid application status")
 
 
 @app.post("/shortlist/{application_id}")
-async def shortlist_application(
-    application_id: str,
-    current_user=Depends(require_admin)
-):
+async def shortlist_application(application_id: str, current_user=Depends(require_admin)):
     return move_application(application_id, shortlisted, "shortlisted")
 
 
 @app.post("/reject/{application_id}")
-async def reject_application(
-    application_id: str,
-    current_user=Depends(require_admin)
-):
+async def reject_application(application_id: str, current_user=Depends(require_admin)):
     return move_application(application_id, rejected, "rejected")
+
 
 # =========================================================
 # LOGIN
@@ -630,24 +542,14 @@ async def reject_application(
 
 @app.post("/logincheck")
 async def login(login: LoginData):
-
     email = login.email.strip().lower()
     password = login.password
 
-    # =====================================================
-    # ADMIN LOGIN
-    # =====================================================
-
-    admin = admins.find_one(
-        {
-            "email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}
-        }
-    )
+    # Admin login
+    admin = admins.find_one({"email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}})
 
     if admin:
-
         valid_admin = False
-
         if admin.get("password_hash"):
             valid_admin = verify_password(password, admin["password_hash"])
 
@@ -656,21 +558,13 @@ async def login(login: LoginData):
                 valid_admin = True
                 admins.update_one(
                     {"_id": admin["_id"]},
-                    {
-                        "$set": {"password_hash": hash_password(password)},
-                        "$unset": {"password": ""}
-                    }
+                    {"$set": {"password_hash": hash_password(password)}, "$unset": {"password": ""}}
                 )
 
         if not valid_admin:
-            return {
-                "success": False,
-                "role": "admin",
-                "message": "Incorrect password"
-            }
+            return {"success": False, "role": "admin", "message": "Incorrect password"}
 
         token = create_access_token(email, "admin")
-
         return {
             "success": True,
             "role": "admin",
@@ -680,28 +574,16 @@ async def login(login: LoginData):
             "token": token
         }
 
-    # =====================================================
-    # MEMBER LOGIN
-    # =====================================================
+    # Member login
+    user = members.find_one({
+        "email": {"$regex": f"^{re.escape(email)}$", "$options": "i"},
+        "status": {"$ne": "disabled"}
+    })
 
-    user = members.find_one(
-        {
-            "email": {"$regex": f"^{re.escape(email)}$", "$options": "i"},
-            "status": {"$ne": "disabled"}
-        }
-    )
-
-    # Migrate old shortlisted member if needed
     if not user:
-        old_user = shortlisted.find_one(
-            {
-                "email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}
-            }
-        )
-
+        old_user = shortlisted.find_one({"email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}})
         if old_user:
             old_password = old_user.get("password") or old_user.get("password_hash")
-
             if old_password:
                 user = {
                     "name": old_user.get("name"),
@@ -720,26 +602,14 @@ async def login(login: LoginData):
                     "status": "active"
                 }
                 members.insert_one(user)
-                shortlisted.update_one(
-                    {"_id": old_user["_id"]},
-                    {"$unset": {"password": ""}}
-                )
+                shortlisted.update_one({"_id": old_user["_id"]}, {"$unset": {"password": ""}})
 
     if not user:
-        return {
-            "success": False,
-            "role": "none",
-            "message": "User not registered"
-        }
+        return {"success": False, "role": "none", "message": "User not registered"}
 
     stored_hash = user.get("password_hash") or user.get("password")
-
     if not stored_hash:
-        return {
-            "success": False,
-            "role": "member",
-            "message": "Member password is not configured"
-        }
+        return {"success": False, "role": "member", "message": "Member password is not configured"}
 
     valid_member = verify_password(password, stored_hash)
 
@@ -749,24 +619,15 @@ async def login(login: LoginData):
             valid_member = True
 
     if not valid_member:
-        return {
-            "success": False,
-            "role": "member",
-            "message": "Incorrect password"
-        }
+        return {"success": False, "role": "member", "message": "Incorrect password"}
 
-    # Auto migrate plaintext → hash
     if user.get("password") or (user.get("password_hash") and user.get("password_hash") == password):
         members.update_one(
             {"_id": user["_id"]},
-            {
-                "$set": {"password_hash": hash_password(password)},
-                "$unset": {"password": ""}
-            }
+            {"$set": {"password_hash": hash_password(password)}, "$unset": {"password": ""}}
         )
 
     token = create_access_token(user["email"], "member")
-
     return {
         "success": True,
         "role": "member",
@@ -778,40 +639,19 @@ async def login(login: LoginData):
     }
 
 
-# =========================================================
-# VERIFY ADMIN
-# =========================================================
-
 @app.post("/admin/verify")
 async def verify_admin(current_user=Depends(require_admin)):
-
     admin = admins.find_one({"email": current_user["email"]})
-
     if not admin:
         raise HTTPException(status_code=401, detail="Admin account not found")
+    return {"success": True, "role": "admin", "email": admin["email"]}
 
-    return {
-        "success": True,
-        "role": "admin",
-        "email": admin["email"]
-    }
-
-
-# =========================================================
-# VERIFY MEMBER
-# =========================================================
 
 @app.post("/member/verify")
 async def verify_member(current_user=Depends(require_member)):
-
-    member = members.find_one({
-        "email": current_user["email"],
-        "status": "active"
-    })
-
+    member = members.find_one({"email": current_user["email"], "status": "active"})
     if not member:
         raise HTTPException(status_code=401, detail="Member account not found or disabled")
-
     return {
         "success": True,
         "role": "member",
@@ -820,18 +660,9 @@ async def verify_member(current_user=Depends(require_member)):
     }
 
 
-# =========================================================
-# GET CURRENT MEMBER DATA
-# =========================================================
-
 @app.get("/member/me")
 async def get_member_data(current_user=Depends(require_member)):
-
-    member = members.find_one({
-        "email": current_user["email"],
-        "status": "active"
-    })
-
+    member = members.find_one({"email": current_user["email"], "status": "active"})
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
 
@@ -840,48 +671,23 @@ async def get_member_data(current_user=Depends(require_member)):
     member.pop("password_hash", None)
     member.pop("password", None)
 
-    return {
-        "success": True,
-        "member": member
-    }
+    return {"success": True, "member": member}
 
-
-# =========================================================
-# DISABLE MEMBER (Admin only)
-# =========================================================
 
 @app.post("/member/disable/{email}")
 async def disable_member(email: str, current_user=Depends(require_admin)):
-
     result = members.update_one(
         {"email": email.strip().lower()},
         {"$set": {"status": "disabled"}}
     )
-
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Member not found")
+    return {"success": True, "message": "Member disabled successfully"}
 
-    return {
-        "success": True,
-        "message": "Member disabled successfully"
-    }
-
-
-# =========================================================
-# CHANGE MEMBER PASSWORD
-# =========================================================
 
 @app.post("/member/change-password")
-async def change_password(
-    payload: ChangePasswordData,
-    current_user=Depends(require_member)
-):
-
-    member = members.find_one({
-        "email": current_user["email"],
-        "status": "active"
-    })
-
+async def change_password(payload: ChangePasswordData, current_user=Depends(require_member)):
+    member = members.find_one({"email": current_user["email"], "status": "active"})
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
 
@@ -897,20 +703,18 @@ async def change_password(
     if payload.new_password == payload.current_password:
         raise HTTPException(status_code=400, detail="New password must be different from the current password")
 
-    try:
-        new_hash = hash_password(payload.new_password)
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error))
-
-    members.update_one(
-        {"_id": member["_id"]},
-        {"$set": {"password_hash": new_hash}}
-    )
+    new_hash = hash_password(payload.new_password)
+    members.update_one({"_id": member["_id"]}, {"$set": {"password_hash": new_hash}})
 
     new_token = create_access_token(member["email"], "member")
-
     return {
         "success": True,
         "message": "Password updated successfully",
         "accessToken": new_token
     }
+
+
+# =========================================================
+# POLLS + NOTIFICATIONS + GROWTH MODULE
+# (Keep your existing poll, notification and growth routes here)
+# =========================================================
