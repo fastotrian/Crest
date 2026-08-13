@@ -623,3 +623,294 @@ async def reject_application(
     current_user=Depends(require_admin)
 ):
     return move_application(application_id, rejected, "rejected")
+
+# =========================================================
+# LOGIN
+# =========================================================
+
+@app.post("/logincheck")
+async def login(login: LoginData):
+
+    email = login.email.strip().lower()
+    password = login.password
+
+    # =====================================================
+    # ADMIN LOGIN
+    # =====================================================
+
+    admin = admins.find_one(
+        {
+            "email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}
+        }
+    )
+
+    if admin:
+
+        valid_admin = False
+
+        if admin.get("password_hash"):
+            valid_admin = verify_password(password, admin["password_hash"])
+
+        if not valid_admin and (admin.get("password") or admin.get("password_hash")):
+            if admin.get("password") == password or admin.get("password_hash") == password:
+                valid_admin = True
+                admins.update_one(
+                    {"_id": admin["_id"]},
+                    {
+                        "$set": {"password_hash": hash_password(password)},
+                        "$unset": {"password": ""}
+                    }
+                )
+
+        if not valid_admin:
+            return {
+                "success": False,
+                "role": "admin",
+                "message": "Incorrect password"
+            }
+
+        token = create_access_token(email, "admin")
+
+        return {
+            "success": True,
+            "role": "admin",
+            "message": "Admin login successful",
+            "name": admin.get("name", "Administrator"),
+            "email": email,
+            "token": token
+        }
+
+    # =====================================================
+    # MEMBER LOGIN
+    # =====================================================
+
+    user = members.find_one(
+        {
+            "email": {"$regex": f"^{re.escape(email)}$", "$options": "i"},
+            "status": {"$ne": "disabled"}
+        }
+    )
+
+    # Migrate old shortlisted member if needed
+    if not user:
+        old_user = shortlisted.find_one(
+            {
+                "email": {"$regex": f"^{re.escape(email)}$", "$options": "i"}
+            }
+        )
+
+        if old_user:
+            old_password = old_user.get("password") or old_user.get("password_hash")
+
+            if old_password:
+                user = {
+                    "name": old_user.get("name"),
+                    "email": email,
+                    "phone": old_user.get("phone"),
+                    "regNo": old_user.get("regNo"),
+                    "branch": old_user.get("branch"),
+                    "year": old_user.get("year"),
+                    "wing": old_user.get("wing"),
+                    "skills": old_user.get("skills"),
+                    "why": old_user.get("why"),
+                    "portfolio": old_user.get("portfolio"),
+                    "password_hash": hash_password(old_password) if not str(old_password).startswith("$2") else old_password,
+                    "Attendance": "100",
+                    "createdAt": old_user.get("shortlistedAt", datetime.now(timezone.utc)),
+                    "status": "active"
+                }
+                members.insert_one(user)
+                shortlisted.update_one(
+                    {"_id": old_user["_id"]},
+                    {"$unset": {"password": ""}}
+                )
+
+    if not user:
+        return {
+            "success": False,
+            "role": "none",
+            "message": "User not registered"
+        }
+
+    stored_hash = user.get("password_hash") or user.get("password")
+
+    if not stored_hash:
+        return {
+            "success": False,
+            "role": "member",
+            "message": "Member password is not configured"
+        }
+
+    valid_member = verify_password(password, stored_hash)
+
+    if not valid_member:
+        if (user.get("password") and user.get("password") == password) or \
+           (user.get("password_hash") and user.get("password_hash") == password):
+            valid_member = True
+
+    if not valid_member:
+        return {
+            "success": False,
+            "role": "member",
+            "message": "Incorrect password"
+        }
+
+    # Auto migrate plaintext → hash
+    if user.get("password") or (user.get("password_hash") and user.get("password_hash") == password):
+        members.update_one(
+            {"_id": user["_id"]},
+            {
+                "$set": {"password_hash": hash_password(password)},
+                "$unset": {"password": ""}
+            }
+        )
+
+    token = create_access_token(user["email"], "member")
+
+    return {
+        "success": True,
+        "role": "member",
+        "message": "Login successful",
+        "name": user.get("name", "Member"),
+        "email": user["email"],
+        "wing": user.get("wing", ""),
+        "token": token
+    }
+
+
+# =========================================================
+# VERIFY ADMIN
+# =========================================================
+
+@app.post("/admin/verify")
+async def verify_admin(current_user=Depends(require_admin)):
+
+    admin = admins.find_one({"email": current_user["email"]})
+
+    if not admin:
+        raise HTTPException(status_code=401, detail="Admin account not found")
+
+    return {
+        "success": True,
+        "role": "admin",
+        "email": admin["email"]
+    }
+
+
+# =========================================================
+# VERIFY MEMBER
+# =========================================================
+
+@app.post("/member/verify")
+async def verify_member(current_user=Depends(require_member)):
+
+    member = members.find_one({
+        "email": current_user["email"],
+        "status": "active"
+    })
+
+    if not member:
+        raise HTTPException(status_code=401, detail="Member account not found or disabled")
+
+    return {
+        "success": True,
+        "role": "member",
+        "email": member["email"],
+        "name": member.get("name", "Member")
+    }
+
+
+# =========================================================
+# GET CURRENT MEMBER DATA
+# =========================================================
+
+@app.get("/member/me")
+async def get_member_data(current_user=Depends(require_member)):
+
+    member = members.find_one({
+        "email": current_user["email"],
+        "status": "active"
+    })
+
+    if not member:
+        raise HTTPException(status_code=404, detail="Member not found")
+
+    member["id"] = str(member["_id"])
+    del member["_id"]
+    member.pop("password_hash", None)
+    member.pop("password", None)
+
+    return {
+        "success": True,
+        "member": member
+    }
+
+
+# =========================================================
+# DISABLE MEMBER (Admin only)
+# =========================================================
+
+@app.post("/member/disable/{email}")
+async def disable_member(email: str, current_user=Depends(require_admin)):
+
+    result = members.update_one(
+        {"email": email.strip().lower()},
+        {"$set": {"status": "disabled"}}
+    )
+
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Member not found")
+
+    return {
+        "success": True,
+        "message": "Member disabled successfully"
+    }
+
+
+# =========================================================
+# CHANGE MEMBER PASSWORD
+# =========================================================
+
+@app.post("/member/change-password")
+async def change_password(
+    payload: ChangePasswordData,
+    current_user=Depends(require_member)
+):
+
+    member = members.find_one({
+        "email": current_user["email"],
+        "status": "active"
+    })
+
+    if not member:
+        raise HTTPException(status_code=404, detail="Member not found")
+
+    if not member.get("password_hash"):
+        raise HTTPException(status_code=400, detail="Member password is not configured")
+
+    if not verify_password(payload.current_password, member["password_hash"]):
+        raise HTTPException(status_code=401, detail="Current password is incorrect")
+
+    if len(payload.new_password) < 8:
+        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+
+    if payload.new_password == payload.current_password:
+        raise HTTPException(status_code=400, detail="New password must be different from the current password")
+
+    try:
+        new_hash = hash_password(payload.new_password)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+    members.update_one(
+        {"_id": member["_id"]},
+        {"$set": {"password_hash": new_hash}}
+    )
+
+    new_token = create_access_token(member["email"], "member")
+
+    return {
+        "success": True,
+        "message": "Password updated successfully",
+        "accessToken": new_token
+    }
