@@ -43,7 +43,7 @@ function ApplyPage() {
     setMessage("");
 
     try {
-      const response = await fetch("https://crest-jvfj.onrender.com/applications", {
+      const response = await fetch("https://crest-b6rg.onrender.com/applications", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
