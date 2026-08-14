@@ -1550,3 +1550,7 @@ async def create_growth_achievement(payload: GrowthAchievementCreate, current_us
     result = growth_achievements.insert_one(doc)
     doc["_id"] = result.inserted_id
     return {"success": True, "achievement": serialize_achievement(doc)}
+
+@app.get("/ping")
+async def ping():
+    return {"status": "ok", "message": "alive"}    
