@@ -8,6 +8,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from fastapi.responses import Response
 
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict, Any
@@ -1551,6 +1552,6 @@ async def create_growth_achievement(payload: GrowthAchievementCreate, current_us
     doc["_id"] = result.inserted_id
     return {"success": True, "achievement": serialize_achievement(doc)}
 
-@app.get("/ping")
+@app.api_route("/ping", methods=["GET", "HEAD"])
 async def ping():
-    return {"status": "ok", "message": "alive"}    
+    return Response(status_code=200)
